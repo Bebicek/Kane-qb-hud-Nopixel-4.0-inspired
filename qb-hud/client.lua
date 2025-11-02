@@ -1,5 +1,5 @@
-local QBCore = exports['qb-core']:GetCoreObject()
-local PlayerData = QBCore.Functions.GetPlayerData()
+local ESX = exports['es_extended']:getSharedObject()
+local PlayerData = {}
 local config = Config
 local speedMultiplier = config.UseMPH and 2.23694 or 3.6
 local seatbeltOn = false
@@ -20,6 +20,13 @@ local parachute = -1
 local oxygen = 100
 local dev = false
 local playerDead = false
+local isPlayerLoaded = false
+
+local function getStateValue(key)
+    if LocalPlayer and LocalPlayer.state then
+        return LocalPlayer.state[key]
+    end
+end
 local showMenu = false
 local showCircleB = false
 local showSquareB = false
@@ -47,6 +54,15 @@ local function CinematicShow(bool)
     end
 end
 
+local function Notify(message, notifType)
+    if not message then return end
+    if ESX.ShowNotification then
+        ESX.ShowNotification(message, notifType)
+    else
+        TriggerEvent('esx:showNotification', message)
+    end
+end
+
 local function loadSettings(settings)
     for k, v in pairs(settings) do
         if k == 'isToggleMapShapeChecked' then
@@ -65,7 +81,7 @@ local function loadSettings(settings)
             SendNUIMessage({ test = true, event = k, toggle = v })
         end
     end
-    QBCore.Functions.Notify(Lang:t('notify.hud_settings_loaded'), 'success')
+    Notify(Lang:t('notify.hud_settings_loaded'), 'success')
     Wait(1000)
     TriggerEvent('hud:client:LoadMap')
 end
@@ -90,21 +106,139 @@ local function hasHarness(items)
     harness = _harness
 end
 
-RegisterNetEvent('QBCore:Client:OnPlayerLoaded', function()
+local function getAccountBalance(account)
+    if not PlayerData then return 0 end
+    if account == 'cash' then
+        if PlayerData.money ~= nil then
+            return PlayerData.money
+        end
+        if PlayerData.accounts then
+            for _, acc in pairs(PlayerData.accounts) do
+                if acc.name == 'money' or acc.name == 'cash' then
+                    return acc.money or 0
+                end
+            end
+        end
+        return 0
+    end
+    if PlayerData.accounts then
+        for _, acc in pairs(PlayerData.accounts) do
+            if acc.name == account then
+                return acc.money or 0
+            end
+        end
+    end
+    return 0
+end
+
+local function refreshAccountState()
+    cashAmount = getAccountBalance('cash')
+    bankAmount = getAccountBalance('bank')
+end
+
+local function sendMoneyUpdate(accountType, newAmount)
+    local previousCash = cashAmount
+    local previousBank = bankAmount
+    if accountType == 'cash' then
+        cashAmount = newAmount
+        PlayerData.money = newAmount
+    else
+        bankAmount = newAmount
+        if not PlayerData.accounts then PlayerData.accounts = {} end
+        local updated = false
+        for _, acc in pairs(PlayerData.accounts) do
+            if acc.name == accountType then
+                acc.money = newAmount
+                updated = true
+                break
+            end
+        end
+        if not updated then
+            table.insert(PlayerData.accounts, { name = accountType, money = newAmount })
+        end
+    end
+    local diff = accountType == 'cash' and (cashAmount - (previousCash or 0)) or (bankAmount - (previousBank or 0))
+    SendNUIMessage({
+        action = 'updatemoney',
+        cash = math.floor(cashAmount or 0),
+        bank = math.floor(bankAmount or 0),
+        amount = math.floor(math.abs(diff)),
+        minus = diff < 0,
+        type = accountType
+    })
+end
+
+RegisterNetEvent('esx:playerLoaded', function(xPlayer)
     Wait(2000)
     local hudSettings = GetResourceKvpString('hudSettings')
     if hudSettings then loadSettings(json.decode(hudSettings)) end
-    PlayerData = QBCore.Functions.GetPlayerData()
+    PlayerData = xPlayer
+    isPlayerLoaded = true
+    refreshAccountState()
     Wait(3000)
     SetEntityHealth(PlayerPedId(), 200)
+    hasHarness(PlayerData.inventory)
 end)
 
-RegisterNetEvent('QBCore:Client:OnPlayerUnload', function()
+RegisterNetEvent('esx:onPlayerLogout', function()
     PlayerData = {}
+    isPlayerLoaded = false
+    cashAmount = 0
+    bankAmount = 0
 end)
 
-RegisterNetEvent('QBCore:Player:SetPlayerData', function(val)
-    PlayerData = val
+RegisterNetEvent('esx:setJob', function(job)
+    PlayerData.job = job
+end)
+
+RegisterNetEvent('esx:addInventoryItem', function()
+    PlayerData = ESX.GetPlayerData()
+    hasHarness(PlayerData.inventory)
+end)
+
+RegisterNetEvent('esx:removeInventoryItem', function()
+    PlayerData = ESX.GetPlayerData()
+    hasHarness(PlayerData.inventory)
+end)
+
+CreateThread(function()
+    while not isPlayerLoaded do
+        PlayerData = ESX.GetPlayerData()
+        if PlayerData and next(PlayerData) then
+            isPlayerLoaded = true
+            local hudSettings = GetResourceKvpString('hudSettings')
+            if hudSettings then loadSettings(json.decode(hudSettings)) end
+            refreshAccountState()
+            Wait(3000)
+            SetEntityHealth(PlayerPedId(), 200)
+            hasHarness(PlayerData.inventory)
+        else
+            Wait(500)
+        end
+    end
+end)
+
+CreateThread(function()
+    while true do
+        if isPlayerLoaded then
+            TriggerEvent('esx_status:getStatus', 'hunger', function(status)
+                if status then
+                    hunger = math.floor((status.val / 10000))
+                end
+            end)
+            TriggerEvent('esx_status:getStatus', 'thirst', function(status)
+                if status then
+                    thirst = math.floor((status.val / 10000))
+                end
+            end)
+            TriggerEvent('esx_status:getStatus', 'stress', function(status)
+                if status then
+                    stress = math.floor((status.val / 10000))
+                end
+            end)
+        end
+        Wait(1000)
+    end
 end)
 
 AddEventHandler('onResourceStart', function(resourceName)
@@ -141,7 +275,7 @@ RegisterKeyMapping('menu', 'Open Menu', 'keyboard', config.OpenMenu)
 -- Reset hud
 local function restartHud()
     TriggerEvent('hud:client:playResetHudSounds')
-    QBCore.Functions.Notify(Lang:t('notify.hud_restart'), 'error')
+    Notify(Lang:t('notify.hud_restart'), 'error')
     if IsPedInAnyVehicle(PlayerPedId()) then
         Wait(2600)
         SendNUIMessage({ action = 'car', show = false })
@@ -151,7 +285,7 @@ local function restartHud()
     SendNUIMessage({ action = 'hudtick', show = false })
     SendNUIMessage({ action = 'hudtick', show = true })
     Wait(2600)
-    QBCore.Functions.Notify(Lang:t('notify.hud_start'), 'success')
+    Notify(Lang:t('notify.hud_start'), 'success')
 end
 
 
@@ -191,7 +325,7 @@ RegisterNetEvent('hud:client:resetStorage', function()
     if Menu.isResetSoundsChecked then
         TriggerServerEvent('InteractSound_SV:PlayOnSource', 'airwrench', 0.1)
     end
-    QBCore.Functions.TriggerCallback('hud:server:getMenu', function(menu)
+    ESX.TriggerServerCallback('hud:server:getMenu', function(menu)
         loadSettings(menu); SetResourceKvp('hudSettings', json.encode(menu))
     end)
 end)
@@ -386,7 +520,7 @@ RegisterNetEvent('hud:client:LoadMap', function()
             Wait(150)
         end
         if Menu.isMapNotifChecked then
-            QBCore.Functions.Notify(Lang:t('notify.load_square_map'))
+            Notify(Lang:t('notify.load_square_map'))
         end
         SetMinimapClipType(0)
         AddReplaceTexture('platform:/textures/graphics', 'radarmasksm', 'squaremap', 'radarmasksm')
@@ -415,7 +549,7 @@ RegisterNetEvent('hud:client:LoadMap', function()
         end
         Wait(1200)
         if Menu.isMapNotifChecked then
-            QBCore.Functions.Notify(Lang:t('notify.loaded_square_map'))
+            Notify(Lang:t('notify.loaded_square_map'))
         end
     elseif Menu.isToggleMapShapeChecked == 'circle' then
         RequestStreamedTextureDict('circlemap', false)
@@ -423,7 +557,7 @@ RegisterNetEvent('hud:client:LoadMap', function()
             Wait(150)
         end
         if Menu.isMapNotifChecked then
-            QBCore.Functions.Notify(Lang:t('notify.load_circle_map'))
+            Notify(Lang:t('notify.load_circle_map'))
         end
         SetMinimapClipType(1)
         AddReplaceTexture('platform:/textures/graphics', 'radarmasksm', 'circlemap', 'radarmasksm')
@@ -452,7 +586,7 @@ RegisterNetEvent('hud:client:LoadMap', function()
         end
         Wait(1200)
         if Menu.isMapNotifChecked then
-            QBCore.Functions.Notify(Lang:t('notify.loaded_circle_map'))
+            Notify(Lang:t('notify.loaded_circle_map'))
         end
     end
 end)
@@ -550,14 +684,14 @@ RegisterNUICallback('cinematicMode', function(_, cb)
         CinematicShow(false)
         Menu.isCinematicModeChecked = false
         if Menu.isCinematicNotifChecked then
-            QBCore.Functions.Notify(Lang:t('notify.cinematic_off'), 'error')
+            Notify(Lang:t('notify.cinematic_off'), 'error')
         end
         DisplayRadar(1)
     else
         CinematicShow(true)
         Menu.isCinematicModeChecked = true
         if Menu.isCinematicNotifChecked then
-            QBCore.Functions.Notify(Lang:t('notify.cinematic_on'))
+            Notify(Lang:t('notify.cinematic_on'))
         end
     end
     TriggerEvent('hud:client:playHudChecklistSound')
@@ -569,7 +703,7 @@ RegisterNetEvent('hud:client:ToggleAirHud', function()
     showAltitude = not showAltitude
 end)
 
-RegisterNetEvent('hud:client:UpdateNeeds', function(newHunger, newThirst) -- Triggered in qb-core
+RegisterNetEvent('hud:client:UpdateNeeds', function(newHunger, newThirst)
     hunger = newHunger
     thirst = newThirst
 end)
@@ -600,6 +734,10 @@ RegisterNetEvent('hud:client:UpdateHarness', function(harnessHp)
 end)
 
 RegisterNetEvent('qb-admin:client:ToggleDevmode', function()
+    dev = not dev
+end)
+
+RegisterNetEvent('hud:client:ToggleDevmode', function()
     dev = not dev
 end)
 
@@ -702,7 +840,7 @@ CreateThread(function()
         else
             Wait(50)
         end
-        if LocalPlayer.state.isLoggedIn then
+        if isPlayerLoaded then
             local show = true
             local player = PlayerPedId()
             local playerId = PlayerId()
@@ -715,7 +853,7 @@ CreateThread(function()
                     armed = false
                 end
             end
-            playerDead = IsEntityDead(player) or PlayerData.metadata['inlaststand'] or PlayerData.metadata['isdead'] or false
+            playerDead = IsEntityDead(player)
             parachute = GetPedParachuteState(player)
             -- Stamina
             --if not IsEntityInWater(player) then
@@ -728,8 +866,9 @@ CreateThread(function()
             -- Player hud
             local talking = NetworkIsPlayerTalking(playerId)
             local voice = 0
-            if LocalPlayer.state['proximity'] then
-                voice = LocalPlayer.state['proximity'].distance
+            local proximity = getStateValue('proximity')
+            if proximity and proximity.distance then
+                voice = proximity.distance
             end
             if IsPauseMenuActive() then
                 refreshHudCalled = false
@@ -757,7 +896,7 @@ CreateThread(function()
                     hunger,
                     stress,
                     voice,
-                    LocalPlayer.state['radioChannel'],
+                    getStateValue('radioChannel'),
                     talking,
                     armed,
                     oxygen,
@@ -801,7 +940,7 @@ CreateThread(function()
                     hunger,
                     stress,
                     voice,
-                    LocalPlayer.state['radioChannel'],
+                    getStateValue('radioChannel'),
                     talking,
                     armed,
                     oxygen,
@@ -858,13 +997,13 @@ end)
 -- Low fuel
 CreateThread(function()
     while true do
-        if LocalPlayer.state.isLoggedIn then
+        if isPlayerLoaded then
             local ped = PlayerPedId()
             if IsPedInAnyVehicle(ped, false) and not IsThisModelABicycle(GetEntityModel(GetVehiclePedIsIn(ped, false))) then
                 if exports['LegacyFuel']:GetFuel(GetVehiclePedIsIn(ped, false)) <= 20 then -- At 20% Fuel Left
                     if Menu.isLowFuelChecked then
                         TriggerServerEvent('InteractSound_SV:PlayOnSource', 'pager', 0.10)
-                        QBCore.Functions.Notify(Lang:t('notify.low_fuel'), 'error')
+                        Notify(Lang:t('notify.low_fuel'), 'error')
                         Wait(60000) -- repeats every 1 min until empty
                     end
                 end
@@ -877,6 +1016,19 @@ end)
 -- Money HUD
 
 local Round = math.floor
+
+RegisterNetEvent('esx:setAccountMoney', function(account)
+    if not account then return end
+    if account.name == 'bank' then
+        sendMoneyUpdate('bank', account.money or 0)
+    elseif account.name == 'money' or account.name == 'cash' then
+        sendMoneyUpdate('cash', account.money or 0)
+    end
+end)
+
+RegisterNetEvent('esx:setMoney', function(money)
+    sendMoneyUpdate('cash', money or 0)
+end)
 
 RegisterNetEvent('hud:client:ShowAccounts', function(type, amount)
     if type == 'cash' then
@@ -895,16 +1047,15 @@ RegisterNetEvent('hud:client:ShowAccounts', function(type, amount)
 end)
 
 RegisterNetEvent('hud:client:OnMoneyChange', function(type, amount, isMinus)
-    cashAmount = PlayerData.money['cash']
-    bankAmount = PlayerData.money['bank']
-    SendNUIMessage({
-        action = 'updatemoney',
-        cash = Round(cashAmount),
-        bank = Round(bankAmount),
-        amount = Round(amount),
-        minus = isMinus,
-        type = type
-    })
+    local currentCash = cashAmount or 0
+    local currentBank = bankAmount or 0
+    if type == 'cash' then
+        local newAmount = isMinus and (currentCash - amount) or (currentCash + amount)
+        sendMoneyUpdate('cash', newAmount)
+    elseif type == 'bank' then
+        local newAmount = isMinus and (currentBank - amount) or (currentBank + amount)
+        sendMoneyUpdate('bank', newAmount)
+    end
 end)
 
 -- Harness Check
@@ -915,7 +1066,7 @@ CreateThread(function()
 
         local ped = PlayerPedId()
         if IsPedInAnyVehicle(ped, false) then
-            hasHarness(PlayerData.items)
+            hasHarness(PlayerData.inventory)
         end
     end
 end)
@@ -925,7 +1076,7 @@ end)
 if not config.DisableStress then
     CreateThread(function() -- Speeding
         while true do
-            if LocalPlayer.state.isLoggedIn then
+            if isPlayerLoaded then
                 local ped = PlayerPedId()
                 if IsPedInAnyVehicle(ped, false) then
                     local veh = GetVehiclePedIsIn(ped, false)
@@ -951,7 +1102,7 @@ if not config.DisableStress then
 
     CreateThread(function() -- Shooting
         while true do
-            if LocalPlayer.state.isLoggedIn then
+            if isPlayerLoaded then
                 local ped = PlayerPedId()
                 local weapon = GetSelectedPedWeapon(ped)
                 if weapon ~= `WEAPON_UNARMED` then
