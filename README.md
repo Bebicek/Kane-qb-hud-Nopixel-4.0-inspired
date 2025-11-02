@@ -1,7 +1,7 @@
 
 # Help me by checking out more of my script [Click here](https://kane-shop.tebex.io/category/2596522)
 
-## Heavily edited of QBCore Hud by me into Nopixel 4.0 inspired design with manual transmission.
+## ESX compatible fork of the original QBCore HUD, keeping the NoPixel 4.0 inspired design with manual transmission.
 ![image](https://github.com/rohKane/Kane-qb-hud-Nopixel-4.0-inspired/assets/47999933/b7a6050e-6a9e-44d4-bbac-4da7c17ff3a1)
 
 # Add Manual transmission car
